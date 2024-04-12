@@ -6,7 +6,7 @@ Buil the container with
 
 from repository root and run with
 
-    docker run -v $(pwd):/tmp/data --init -ti -p 8889:8888 fenics-matscipy
+    docker run -v $(pwd):/tmp/matscipy --init -ti -p 8888:8888 fenics-matscipy
 
 From within `/tmp/matscipy` within the container, run
 
