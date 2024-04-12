@@ -61,52 +61,6 @@ class PoissonNernstPlanckSystemABC(ABC):
     def charge_density(self):
         ...
 
-
-    @abstractmethod
-    def potential_dirichlet_bc(self, x, u0=0):
-        ...
-
-    @abstractmethod
-    def left_dirichlet_bc(self, x, k, x0=0):
-        """Construct Dirichlet BC at boundary"""
-        ...
-
-    @abstractmethod
-    def potential_robin_bc(self, x, lam, u0=0):
-        ...
-
-    @abstractmethod
-    def robin_bc(self, x, k, lam, x0=0):
-        """
-        Compute left hand side Robin (u + lam*dudx = u0 ) BC at in accord with
-        2nd order finite difference scheme.
-
-        Parameters
-        ----------
-        x : (Ni,) ndarray
-            N-valued variable vector
-        k : int
-            ion species (-1 for potential)
-        lam: float
-            BC coefficient, corresponds to Stern layer thickness
-            if applied to potential variable in PNP problem. Here, this steric
-            layer is assumed to constitute a region of uniform charge density
-            and thus linear potential drop across the interface.
-        x0 : float
-            right hand side value of BC, corresponds to potential beyond Stern
-            layer if applied to potential variable in PNP system.
-
-        Returns
-        -------
-        float: boundary condition residual
-        """
-        ...
-
-    @abstractmethod
-    def number_conservation_constraint(self, x, k, N0):
-        """N0: total amount of species, k: ion species"""
-        ...
-
     @property
     def ionic_strength(self):  # ionic strength
         """Compute the system's ionic strength from charges and concentrations.
