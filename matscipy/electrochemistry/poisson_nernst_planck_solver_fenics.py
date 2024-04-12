@@ -26,11 +26,12 @@ University of Freiburg
 Authors:
   Johannes Hoermann <johannes.hoermann@imtek-uni-freiburg.de>
 """
+import logging
 import numpy as np
 import scipy.interpolate
 import fenics as fn
 
-from matscipy.electrochemistry.poisson_nernst_planck_solver import PoissonNernstPlanckSystem
+from matscipy.electrochemistry.poisson_nernst_planck_solver_base import PoissonNernstPlanckSystemABC
 
 
 class Boundary(fn.SubDomain):
@@ -46,9 +47,30 @@ class Boundary(fn.SubDomain):
         return on_boundary and fn.near(x[0], self.x0, self.tol)
 
 
-class PoissonNernstPlanckSystemFEniCS(PoissonNernstPlanckSystem):
+class PoissonNernstPlanckSystemFEniCS(PoissonNernstPlanckSystemABC):
     """Describes and solves a 1D Poisson-Nernst-Planck system,
     using log concentrations internally"""
+
+    @property
+    def grid(self):
+        return self.X * self.l_unit
+
+    @property
+    def potential(self):
+        return self.uij * self.u_unit
+
+    @property
+    def concentration(self):
+        return np.where(self.nij > np.finfo('float64').resolution,
+                        self.nij * self.c_unit, 0.0)
+
+    @property
+    def charge_density(self):
+        return np.sum(self.F * self.concentration.T * self.z, axis=1)
+
+    @property
+    def x1_scaled(self):
+        return self.x0_scaled + self.L_scaled
 
     @property
     def X(self):
@@ -374,6 +396,96 @@ class PoissonNernstPlanckSystemFEniCS(PoissonNernstPlanckSystem):
         vqmu = fn.TestFunctions(self.W)
         self.v, self.q, self.mu = (
             vqmu[0], [*vqmu[1:(self.M+1)]], [*vqmu[(self.M+1):]])
+
+    def init(self,
+             L=100e-9,  # 100 nm
+             lambda_S=0,  # Stern layer (compact layer) thickness
+             x0=0,  # zero position
+             delta_u=0.05,  # potential difference [V]
+             relative_permittivity=79,
+             N=200,  # number of grid segments, number of grid points Ni = N + 1
+             e=1e-10,  # absolute tolerance, TODO: switch to standardized measure
+             maxit=20,  # maximum number of Newton iterations
+             solver=None,
+             options=None,
+             **kwargs):
+        """Initializes a 1D Poisson-Nernst-Planck system description.
+
+        Expects quantities in SI units per default.
+
+        Parameters
+        ----------
+        c : (M,) ndarray, optional
+            bulk concentrations of each ionic species [mol/m^3]
+            (default: [ 0.1, 0.1 ])
+        z : (M,) ndarray, optional
+            charge of each ionic species [1] (default: [ +1, -1 ])
+        x0 : float, optional
+            left hand side reference position (default: 0)
+        L : float, optional
+            1D domain size [m] (default: 100e-9)
+        lambda_S: float, optional
+            Stern layer thickness in case of Robin BC [m] (default: 0)
+        T : float, optional
+            temperature of the solution [K] (default: 298.15)
+        delta_u : float, optional
+            potential drop across 1D cell [V] (default: 0.05)
+        relative_permittivity: float, optional
+            relative permittivity of the ionic solution [1] (default: 79)
+        vacuum_permittivity: float, optional
+            vacuum permittivity [F m^-1] (default: 8.854187817620389e-12 )
+        R : float, optional
+            molar gas constant [J mol^-1 K^-1] (default: 8.3144598)
+        F : float, optional
+            Faraday constant [C mol^-1] (default: 96485.33289)
+        N : int, optional
+            number of discretization grid segments (default: 200)
+        e : float, optional
+            absolute tolerance for Newton solver convergence (default: 1e-10)
+        maxit : int, optional
+            maximum number of Newton iterations (default: 20)
+        solver: func( func(x), x0), optional
+            solver to use (default: None, will use own simple Newton solver)
+        potential0: (N+1,) ndarray, optional (default: None)
+            potential initial values
+        concentration0: (M,N+1) ndarray, optional (default: None)
+            concentration initial values
+        """
+        self.logger = logging.getLogger(__name__)
+        super().init(**kwargs)
+
+        # default solver settings
+        self.converged = False  # solver's convergence flag
+        self.N = N  # discretization segments
+        self.e = e  # Newton solver default tolerance
+        self.maxit = maxit  # Newton solver maximum iterations
+
+        self.L = L  # 1d domain size
+        self.lambda_S = lambda_S  # Stern layer thickness
+        self.x0 = x0  # reference position
+        self.delta_u = delta_u  # potential difference
+
+        # domain
+        self.L_scaled = self.L / self.l_unit
+
+        # compact layer
+        self.lambda_S_scaled = self.lambda_S / self.l_unit
+
+        # reference position
+        self.x0_scaled = self.x0 / self.l_unit
+
+        # potential difference
+        self.delta_u_scaled = self.delta_u / self.u_unit
+
+        # print scaled quantities to log
+        self.logger.info('{:<{lwidth}s} {:> 8.4g}'.format(
+            'reduced domain size L*', self.L_scaled, lwidth=self.label_width))
+        self.logger.info('{:<{lwidth}s} {:> 8.4g}'.format(
+            'reduced compact layer thickness lambda_S*', self.lambda_S_scaled, lwidth=self.label_width))
+        self.logger.info('{:<{lwidth}s} {:> 8.4g}'.format(
+            'reduced reference position x0*', self.x0_scaled, lwidth=self.label_width))
+        self.logger.info('{:<{lwidth}s} {:> 8.4g}'.format(
+            'reduced potential delta_u*', self.delta_u_scaled, lwidth=self.label_width))
 
     def __init__(self, *args, **kwargs):
         """Same parameters as PoissonNernstPlanckSystem.init

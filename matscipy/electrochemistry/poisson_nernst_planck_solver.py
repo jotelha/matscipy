@@ -170,7 +170,7 @@ class PoissonNernstPlanckSystem(PoissonNernstPlanckSystemABC):
             self.logger.debug('    Jacobian ({}) rank {:d}'.format(J.shape, rank))
 
             if rank < self.N:
-                self.logger.warn("Singular jacobian of rank {:d} < {:d} at step {:d}".format(rank, self.N, i))
+                self.logger.warning("Singular jacobian of rank {:d} < {:d} at step {:d}".format(rank, self.N, i))
                 break
 
             F = f(xij)
@@ -199,7 +199,7 @@ class PoissonNernstPlanckSystem(PoissonNernstPlanckSystemABC):
             i += 1
 
         if i == self.maxit:
-            self.logger.warn("Maximum number of iterations reached")
+            self.logger.warning("Maximum number of iterations reached")
             self.converged = False
 
         self.logger.info("Ended after {:d} steps.".format(i))
@@ -354,7 +354,7 @@ class PoissonNernstPlanckSystem(PoissonNernstPlanckSystemABC):
                                       options=self.options)
             self.xij1 = res.x
             if not res.success:
-                logger.warn(res.message)
+                logger.warning(res.message)
         elif isinstance(self.solver, str):
             f = lambda x: np.linalg.norm(self.G(x))
             res = scipy.optimize.minimize(f, self.xi0.copy(),
@@ -363,7 +363,7 @@ class PoissonNernstPlanckSystem(PoissonNernstPlanckSystemABC):
                                           options=self.options)
             self.xij1 = res.x
             if not res.success:
-                logger.warn(res.message)
+                logger.warning(res.message)
         else:
             self.xij1 = self.solver(self.G, self.xi0.copy(),
                                     callback=self.solver_callback,
