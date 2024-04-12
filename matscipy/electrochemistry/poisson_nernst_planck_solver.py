@@ -32,6 +32,8 @@ import numpy as np
 import scipy.constants as sc
 import scipy.optimize
 
+from matscipy.electrochemistry.poisson_nernst_planck_solver_base import PoissonNernstPlanckSystemABC
+
 logger = logging.getLogger(__name__)
 
 # For the employed controlled volume scheme, we express the transport
@@ -98,7 +100,7 @@ def jacobian(f, x0, dx=np.NaN):
     return F
 
 
-class PoissonNernstPlanckSystem:
+class PoissonNernstPlanckSystem(PoissonNernstPlanckSystemABC):
     """Describes and solves a 1D Poisson-Nernst-Planck system"""
 
     # properties "offer" the solution in physical units:
@@ -897,7 +899,7 @@ class PoissonNernstPlanckSystem:
              options=None,
              potential0=None,
              concentration0=None,
-             **kwarsg):
+             **kwargs):
         """Initializes a 1D Poisson-Nernst-Planck system description.
 
         Expects quantities in SI units per default.
