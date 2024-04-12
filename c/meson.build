@@ -1,6 +1,6 @@
 # Find numpy include directory
 include_numpy = run_command(python,
-  ['-c', 'import os; os.chdir(".."); import numpy; print(numpy.get_include())'],
+  ['-c', 'import os; os.chdir(".."); import numpy; print(os.path.join("..", os.path.relpath(numpy.get_include())))'],
   check : true
 ).stdout().strip()
 
