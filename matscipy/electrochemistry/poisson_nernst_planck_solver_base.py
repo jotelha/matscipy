@@ -27,14 +27,10 @@ Authors:
   Johannes Hoermann <johannes.hoermann@imtek-uni-freiburg.de>
 """
 import logging
-import time
 import numpy as np
 import scipy.constants as sc
-import scipy.optimize
 
 from abc import ABC, abstractmethod
-
-logger = logging.getLogger(__name__)
 
 
 class PoissonNernstPlanckSystemABC(ABC):

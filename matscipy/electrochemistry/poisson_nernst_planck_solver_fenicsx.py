@@ -26,29 +26,61 @@ University of Freiburg
 Authors:
   Johannes Hoermann <johannes.hoermann@imtek-uni-freiburg.de>
 """
+import logging
 import numpy as np
 import scipy.interpolate
-import fenics as fn
+# import fenics as fn
 
-from matscipy.electrochemistry.poisson_nernst_planck_solver import PoissonNernstPlanckSystem
+from mpi4py import MPI
+from petsc4py import PETSc
 
+import ufl
+import basix.ufl
+import dolfinx.log
 
-class Boundary(fn.SubDomain):
-    """Mark a point to be within the domain boundary for fenics."""
-    # Boundary causes crash kernel if __init__ does not call super().__init__()
-    def __init__(self, x0=0, tol=1e-14):
-        super().__init__()
-        self.tol = tol
-        self.x0 = x0
+from dolfinx.fem.petsc import NonlinearProblem
+from dolfinx.nls.petsc import NewtonSolver
 
-    def inside(self, x, on_boundary):
-        """Mark a point to be within the domain boundary for fenics."""
-        return on_boundary and fn.near(x[0], self.x0, self.tol)
+from matscipy.electrochemistry.poisson_nernst_planck_solver_base import PoissonNernstPlanckSystemABC
 
 
-class PoissonNernstPlanckSystemFEniCS(PoissonNernstPlanckSystem):
-    """Describes and solves a 1D Poisson-Nernst-Planck system,
-    using log concentrations internally"""
+# class Boundary(fn.SubDomain):
+#     """Mark a point to be within the domain boundary for fenics."""
+#
+#     # Boundary causes crash kernel if __init__ does not call super().__init__()
+#     def __init__(self, x0=0, tol=1e-14):
+#         super().__init__()
+#         self.tol = tol
+#         self.x0 = x0
+#
+#     def inside(self, x, on_boundary):
+#         """Mark a point to be within the domain boundary for fenics."""
+#         return on_boundary and fn.near(x[0], self.x0, self.tol)
+#
+
+class PoissonNernstPlanckSystemFEniCSx(PoissonNernstPlanckSystemABC):
+    """Describes and solves a 1D Poisson-Nernst-Planck system with FEniCSx FEM."""
+
+    @property
+    def grid(self):
+        return self.X * self.l_unit
+
+    @property
+    def potential(self):
+        return self.uij * self.u_unit
+
+    @property
+    def concentration(self):
+        return np.where(self.nij > np.finfo('float64').resolution,
+                        self.nij * self.c_unit, 0.0)
+
+    @property
+    def charge_density(self):
+        return np.sum(self.F * self.concentration.T * self.z, axis=1)
+
+    @property
+    def x1_scaled(self):
+        return self.x0_scaled + self.L_scaled
 
     @property
     def X(self):
@@ -77,77 +109,104 @@ class PoissonNernstPlanckSystemFEniCS(PoissonNernstPlanckSystem):
         # W is the space all w live in.
         rho = 0
         for i in range(self.M):
-            rho += self.z[i]*self.p[i]
+            rho += self.z[i] * self.p[i]
 
-        source = - 0.5 * rho * self.v * fn.dx
+        source = - 0.5 * rho * self.v * ufl.dx
 
-        laplace = fn.dot(fn.grad(self.u), fn.grad(self.v))*fn.dx
+        laplace = ufl.dot(ufl.grad(self.u), ufl.grad(self.v)) * ufl.dx
 
         poisson = laplace + source
 
         nernst_planck = 0
         for i in range(self.M):
-            nernst_planck += fn.dot(
-                    - fn.grad(self.p[i]) - self.z[i]*self.p[i]*fn.grad(self.u),
-                    fn.grad(self.q[i])
-                )*fn.dx
+            nernst_planck += ufl.dot(
+                - ufl.grad(self.p[i]) - self.z[i] * self.p[i] * ufl.grad(self.u),
+                ufl.grad(self.q[i])
+            ) * ufl.dx
 
         # constraints set up elsewhere
         F = poisson + nernst_planck + self.constraints
 
-        fn.solve(F == 0, self.w, self.boundary_conditions,
-                 solver_parameters=self.solver_parameters)
+        problem = NonlinearProblem(F, self.w, bcs=self.boundary_conditions)
+
+        solver = NewtonSolver(MPI.COMM_WORLD, problem)
+        solver.convergence_criterion = "incremental"
+        solver.rtol = 1e-6
+        solver.report = True
+
+        ksp = solver.krylov_solver
+        opts = PETSc.Options()
+        option_prefix = ksp.getOptionsPrefix()
+        opts[f"{option_prefix}ksp_type"] = "cg"
+        opts[f"{option_prefix}pc_type"] = "gamg"
+        opts[f"{option_prefix}pc_factor_mat_solver_type"] = "mumps"
+        ksp.setFromOptions()
+
+        dolfinx.log.set_log_level(dolfinx.log.LogLevel.INFO)
+        n, converged = solver.solve(self.w)
+        self.logger.info(f"Number of iterations: {n:d}")
+
+        # fn.solve(F == 0, self.w, self.boundary_conditions,
+        #         solver_parameters=self.solver_parameters)
 
         # store results:
         wij = np.array([self.w(x) for x in self.X]).T
 
         self.uij = wij[0, :]  # potential
-        self.nij = wij[1:(self.M+1), :]  # concentrations
-        self.lamj = wij[(self.M+1):]  # Lagrange multipliers
+        self.nij = wij[1:(self.M + 1), :]  # concentrations
+        self.lamj = wij[(self.M + 1):]  # Lagrange multipliers
 
         return self.uij, self.nij, self.lamj
 
-    def boundary_L(self, x, on_boundary):
-        """Mark left boundary. Returns True if x on left boundary."""
-        return on_boundary and fn.near(x[0], self.x0_scaled, self.bctol)
-
-    def boundary_R(self, x, on_boundary):
-        """Mark right boundary. Returns True if x on right boundary."""
-        return on_boundary and fn.near(x[0], self.x1_scaled, self.bctol)
-
-    def boundary_C(self, x, on_boundary):
-        """Mark domain center."""
-        return fn.near(x[0], (self.x0_scaled + self.x1_scaled)/2., self.bctol)
+    # def boundary_L(self, x):
+    #     """Mark left boundary. Returns True if x on left boundary."""
+    #     # return on_boundary and fn.near(x[0], self.x0_scaled, self.bctol)
+    #     return np.isclose(x[0], self.x0_scaled)
+    #
+    # def boundary_R(self, x):
+    #     """Mark right boundary. Returns True if x on right boundary."""
+    #     # return on_boundary and fn.near(x[0], self.x1_scaled, self.bctol)
+    #     return np.isclose(x[0], self.x1_scaled)
 
     def apply_left_potential_dirichlet_bc(self, u0):
         """FEniCS Dirichlet BC u0 for potential at left boundary."""
         self.boundary_conditions.extend([
-            fn.DirichletBC(self.W.sub(0), u0,
-                           lambda x, on_boundary: self.boundary_L(x, on_boundary))])
+            dolfinx.fem.dirichletbc(
+                dolfinx.fem.Constant(self.mesh, dolfinx.default_scalar_type(u0)),
+                self.left_boundary_dofs[0], self.W.sub(0))])
+        # self.boundary_conditions.extend([
+        #       fn.DirichletBC(self.W.sub(0), u0,
+        #                lambda x, on_boundary: self.boundary_L(x, on_boundary))])
 
     def apply_right_potential_dirichlet_bc(self, u0):
         """FEniCS Dirichlet BC u0 for potential at right boundary."""
         self.boundary_conditions.extend([
-            fn.DirichletBC(self.W.sub(0), u0,
-                           lambda x, on_boundary: self.boundary_R(x, on_boundary))])
+            dolfinx.fem.dirichletbc(
+                dolfinx.fem.Constant(self.mesh, dolfinx.default_scalar_type(u0)),
+                self.right_boundary_dofs[0], self.W.sub(0))])
+        # self.boundary_conditions.extend([
+        #     fn.DirichletBC(self.W.sub(0), u0,
+        #                lambda x, on_boundary: self.boundary_R(x, on_boundary))])
 
     def apply_left_concentration_dirichlet_bc(self, k, c0):
         """FEniCS Dirichlet BC c0 for k'th ion species at left boundary."""
         self.boundary_conditions.extend([
-            fn.DirichletBC(self.W.sub(k+1), c0,
-                           lambda x, on_boundary: self.boundary_L(x, on_boundary))])
+            dolfinx.fem.dirichletbc(
+                dolfinx.fem.Constant(self.mesh, dolfinx.default_scalar_type(c0)),
+                self.left_boundary_dofs[k+1], self.W.sub(k+1))])
+        # self.boundary_conditions.extend([
+        #     fn.DirichletBC(self.W.sub(k + 1), c0,
+        #                    lambda x, on_boundary: self.boundary_L(x, on_boundary))])
 
     def apply_right_concentration_dirichlet_bc(self, k, c0):
         """FEniCS Dirichlet BC c0 for k'th ion species at right boundary."""
         self.boundary_conditions.extend([
-            fn.DirichletBC(self.W.sub(k+1), c0,
-                           lambda x, on_boundary: self.boundary_R(x, on_boundary))])
-
-    def apply_central_reference_concentration_constraint(self, k, c0):
-        """FEniCS Dirichlet BC c0 for k'th ion species at right boundary."""
-        self.boundary_conditions.extend([
-            fn.DirichletBC(self.W.sub(k+1), c0,
-                           lambda x, on_boundary: self.boundary_C(x, on_boundary))])
+            dolfinx.fem.dirichletbc(
+            dolfinx.fem.Constant(self.mesh, dolfinx.default_scalar_type(c0)),
+                self.right_boundary_dofs[k+1], self.W.sub(k+1))])
+        # self.boundary_conditions.extend([
+        #     fn.DirichletBC(self.W.sub(k + 1), c0,
+        #                    lambda x, on_boundary: self.boundary_R(x, on_boundary))])
 
     # TODO: Robin BC!
     def apply_left_potential_robin_bc(self, u0, lam0):
@@ -161,8 +220,8 @@ class PoissonNernstPlanckSystemFEniCS(PoissonNernstPlanckSystem):
         Enforce number conservation constraint via Lagrange multiplier.
         See https://fenicsproject.org/docs/dolfin/1.6.0/python/demo/documented/neumann-poisson/python/documentation.html
         """
-        self.constraints += self.lam[k]*self.q[k]*fn.dx \
-            + (self.p[k]-c0)*self.mu[k]*fn.dx
+        self.constraints += self.lam[k] * self.q[k] * ufl.dx \
+                            + (self.p[k] - c0) * self.mu[k] * ufl.dx
 
     def apply_potential_dirichlet_bc(self, u0, u1):
         """Potential Dirichlet BC u0 and u1 on left and right boundary."""
@@ -207,15 +266,15 @@ class PoissonNernstPlanckSystemFEniCS(PoissonNernstPlanckSystem):
         self.u0 = self.delta_u_scaled / 2.
         self.u1 = - self.delta_u_scaled / 2.
         self.logger.info('{:>{lwidth}s} u0 = {:< 8.4g}'.format(
-          'Left hand side Dirichlet boundary condition', self.u0, lwidth=self.label_width))
+            'Left hand side Dirichlet boundary condition', self.u0, lwidth=self.label_width))
         self.logger.info('{:>{lwidth}s} u1 = {:< 8.4g}'.format(
-          'Right hand side Dirichlet boundary condition', self.u1, lwidth=self.label_width))
+            'Right hand side Dirichlet boundary condition', self.u1, lwidth=self.label_width))
 
         self.apply_potential_dirichlet_bc(self.u0, self.u1)
 
         # Number conservation constraints
         self.constraints = 0
-        N0 = self.L_scaled*self.c_scaled  # total amount of species in cell
+        N0 = self.L_scaled * self.c_scaled  # total amount of species in cell
         for k in range(self.M):
             self.logger.info('{:>{lwidth}s} N0 = {:<8.4g}'.format(
                 'Ion species {:02d} number conservation constraint'.format(k),
@@ -237,9 +296,9 @@ class PoissonNernstPlanckSystemFEniCS(PoissonNernstPlanckSystem):
         self.u0 = self.delta_u_scaled / 2.
         self.u1 = - self.delta_u_scaled / 2.
         self.logger.info('{:>{lwidth}s} u0 = {:< 8.4g}'.format(
-          'Left hand side Dirichlet boundary condition', self.u0, lwidth=self.label_width))
+            'Left hand side Dirichlet boundary condition', self.u0, lwidth=self.label_width))
         self.logger.info('{:>{lwidth}s} u1 = {:< 8.4g}'.format(
-          'Right hand side Dirichlet boundary condition', self.u1, lwidth=self.label_width))
+            'Right hand side Dirichlet boundary condition', self.u1, lwidth=self.label_width))
 
         self.apply_potential_dirichlet_bc(self.u0, self.u1)
 
@@ -266,7 +325,7 @@ class PoissonNernstPlanckSystemFEniCS(PoissonNernstPlanckSystem):
         self.u1 = - self.delta_u_scaled / 2.
 
         boundary_markers = fn.MeshFunction(
-            'size_t', self.mesh, self.mesh.topology().dim()-1)
+            'size_t', self.mesh, self.mesh.topology().dim() - 1)
 
         bx = [
             Boundary(x0=self.x0_scaled, tol=self.bctol),
@@ -277,8 +336,8 @@ class PoissonNernstPlanckSystemFEniCS(PoissonNernstPlanckSystem):
             b.mark(boundary_markers, i)
 
         boundary_conditions = {
-            0: {'Robin': (1./self.lambda_S_scaled, self.u0)},
-            1: {'Robin': (1./self.lambda_S_scaled, self.u1)},
+            0: {'Robin': (1. / self.lambda_S_scaled, self.u0)},
+            1: {'Robin': (1. / self.lambda_S_scaled, self.u1)},
         }
 
         ds = fn.Measure('ds', domain=self.mesh, subdomain_data=boundary_markers)
@@ -287,13 +346,13 @@ class PoissonNernstPlanckSystemFEniCS(PoissonNernstPlanckSystem):
         for i in boundary_conditions:
             if 'Robin' in boundary_conditions[i]:
                 r, s = boundary_conditions[i]['Robin']
-                integrals_R.append(r*(self.u-s)*self.v*ds(i))
+                integrals_R.append(r * (self.u - s) * self.v * ds(i))
 
         self.constraints += sum(integrals_R)
 
         # Number conservation constraints
 
-        N0 = self.L_scaled*self.c_scaled  # total amount of species in cell
+        N0 = self.L_scaled * self.c_scaled  # total amount of species in cell
         for k in range(self.M):
             self.logger.info('{:>{lwidth}s} N0 = {:<8.4g}'.format(
                 'Ion species {:02d} number conservation constraint'.format(k),
@@ -302,82 +361,190 @@ class PoissonNernstPlanckSystemFEniCS(PoissonNernstPlanckSystem):
 
     def discretize(self):
         """Builds function space, call again after introducing constraints"""
-        # FEniCS interface
-        self.mesh = fn.IntervalMesh(self.N, self.x0_scaled, self.x1_scaled)
+        # FEniCSx interface
+        # self.mesh = fn.IntervalMesh(self.N, self.x0_scaled, self.x1_scaled)
+        self.mesh = dolfinx.mesh.create_interval(MPI.COMM_WORLD, self.N, [self.x0_scaled, self.x1_scaled])
 
-        # http://www.femtable.org/
-        # Argyris*                          ARG
-        # Arnold-Winther*                   AW
-        # Brezzi-Douglas-Fortin-Marini*     BDFM
-        # Brezzi-Douglas-Marini             BDM
-        # Bubble                            B
-        # Crouzeix-Raviart                  CR
-        # Discontinuous Lagrange            DG
-        # Discontinuous Raviart-Thomas      DRT
-        # Hermite*                          HER
-        # Lagrange                          CG
-        # Mardal-Tai-Winther*               MTW
-        # Morley*                           MOR
-        # Nedelec 1st kind H(curl)          N1curl
-        # Nedelec 2nd kind H(curl)          N2curl
-        # Quadrature                        Q
-        # Raviart-Thomas                    RT
-        # Real                              R
+        self.left_boundary = dolfinx.mesh.locate_entities_boundary(
+            self.mesh, dim=(self.mesh.topology.dim - 1),
+            marker=lambda x: np.isclose(x[0], self.x0_scaled))
+        self.right_boundary = dolfinx.mesh.locate_entities_boundary(
+            self.mesh, dim=(self.mesh.topology.dim - 1),
+            marker=lambda x: np.isclose(x[0], self.x1_scaled))
+
+
 
         # construct test and trial function space from elements
         # spanned by Lagrange polynomials for the physical variables of
         # potential and concentration and global elements with a single degree
         # of freedom ('Real') for constraints.
-        # For an example of this approach, refer to
-        #     https://fenicsproject.org/docs/dolfin/latest/python/demos/neumann-poisson/demo_neumann-poisson.py.html
-        # For another example on how to construct and split function spaces
-        # for solving coupled equations, refer to
-        #     https://fenicsproject.org/docs/dolfin/latest/python/demos/mixed-poisson/demo_mixed-poisson.py.html
 
-        P = fn.FiniteElement('Lagrange', fn.interval, 3)
-        R = fn.FiniteElement('Real', fn.interval, 0)
-        elements = [P]*(1+self.M) + [R]*self.K
+        # P = fn.FiniteElement('Lagrange', fn.interval, 3)
+        P = basix.ufl.element('Lagrange', self.mesh.basix_cell(), 3)
 
-        H = fn.MixedElement(elements)
-        self.W = fn.FunctionSpace(self.mesh, H)
+        # R = fn.FiniteElement('Real', fn.interval, 0)
+        # No Real elements in fenicsx yet, see
+        # https://fenicsproject.discourse.group/t/integral-constrains-in-fenicsx/11429
+        # suggested the use of https://github.com/jorgensd/dolfinx_mpc
+        # R = basix.ufl.element('Real', self.mesh.basix_cell(), 0)
+        R = basix.ufl.element('Lagrange', self.mesh.basix_cell(), 3)
+
+        elements = [P] * (1 + self.M) + [R] * self.K
+
+        # H = fn.MixedElement(elements)
+        H = basix.ufl.mixed_element(elements)
+
+        # self.W = fn.FunctionSpace(self.mesh, H)
+        self.W = dolfinx.fem.FunctionSpace(self.mesh, H)
+
+        # boundary degrees of freedom
+        self.left_boundary_dofs = []
+        for k in range(0, self.M + 1):
+            Q, _ = self.W.sub(k).collapse()
+            self.left_boundary_dofs.append(
+                dolfinx.fem.locate_dofs_topological(
+                    V=(self.W.sub(k), Q),
+                    entity_dim=self.mesh.topology.dim - 1,
+                    entities=self.left_boundary))
+
+        self.right_boundary_dofs = []
+        for k in range(0, self.M + 1):
+            Q, _ = self.W.sub(k).collapse()
+            self.right_boundary_dofs.append(
+                dolfinx.fem.locate_dofs_topological(
+                    V=(self.W.sub(k), Q),
+                    entity_dim=self.mesh.topology.dim - 1,
+                    entities=self.right_boundary))
 
         # solution functions
-        self.w = fn.Function(self.W)
+        # self.w = fn.Function(self.W)
+        self.w = dolfinx.fem.Function(self.W)
 
         # set initial values if available
-        P = fn.FunctionSpace(self.mesh, 'P', 1)
-        dof2vtx = fn.vertex_to_dof_map(P)
-        if self.ui0 is not None:
-            x = np.linspace(self.x0_scaled, self.x1_scaled, self.ui0.shape[0])
-            ui0 = scipy.interpolate.interp1d(x, self.ui0)
-            # use linear interpolation on mesh
-            self.u0_func = fn.Function(P)
-            self.u0_func.vector()[:] = ui0(self.X)[dof2vtx]
-            fn.assign(self.w.sub(0),
-                      fn.interpolate(self.u0_func, self.W.sub(0).collapse()))
-
-        if self.ni0 is not None:
-            x = np.linspace(self.x0_scaled, self.x1_scaled, self.ni0.shape[1])
-            ni0 = scipy.interpolate.interp1d(x, self.ni0)
-            self.p0_func = [fn.Function(P)]*self.ni0.shape[0]
-            for k in range(self.ni0.shape[0]):
-                self.p0_func[k].vector()[:] = ni0(self.X)[k, :][dof2vtx]
-                fn.assign(self.w.sub(1+k),
-                          fn.interpolate(self.p0_func[k], self.W.sub(k+1).collapse()))
+        # P = fn.FunctionSpace(self.mesh, 'P', 1)
+        # dof2vtx = fn.vertex_to_dof_map(P)
+        # if self.ui0 is not None:
+        #     x = np.linspace(self.x0_scaled, self.x1_scaled, self.ui0.shape[0])
+        #     ui0 = scipy.interpolate.interp1d(x, self.ui0)
+        #     # use linear interpolation on mesh
+        #     self.u0_func = fn.Function(P)
+        #     self.u0_func.vector()[:] = ui0(self.X)[dof2vtx]
+        #     fn.assign(self.w.sub(0),
+        #               fn.interpolate(self.u0_func, self.W.sub(0).collapse()))
+        #
+        # if self.ni0 is not None:
+        #     x = np.linspace(self.x0_scaled, self.x1_scaled, self.ni0.shape[1])
+        #     ni0 = scipy.interpolate.interp1d(x, self.ni0)
+        #     self.p0_func = [fn.Function(P)] * self.ni0.shape[0]
+        #     for k in range(self.ni0.shape[0]):
+        #         self.p0_func[k].vector()[:] = ni0(self.X)[k, :][dof2vtx]
+        #         fn.assign(self.w.sub(1 + k),
+        #                   fn.interpolate(self.p0_func[k], self.W.sub(k + 1).collapse()))
 
         # u represents voltage , p concentrations
-        uplam = fn.split(self.w)
+        # uplam = fn.split(self.w)
+        uplam = self.w.split()
         self.u, self.p, self.lam = (
-            uplam[0], [*uplam[1:(self.M+1)]], [*uplam[(self.M+1):]])
+            uplam[0], [*uplam[1:(self.M + 1)]], [*uplam[(self.M + 1):]])
 
         # v, q and mu represent respective test functions
-        vqmu = fn.TestFunctions(self.W)
+        vqmu = ufl.TestFunctions(self.W)
         self.v, self.q, self.mu = (
-            vqmu[0], [*vqmu[1:(self.M+1)]], [*vqmu[(self.M+1):]])
+            vqmu[0], [*vqmu[1:(self.M + 1)]], [*vqmu[(self.M + 1):]])
+
+    def init(self,
+             L=100e-9,  # 100 nm
+             lambda_S=0,  # Stern layer (compact layer) thickness
+             x0=0,  # zero position
+             delta_u=0.05,  # potential difference [V]
+             relative_permittivity=79,
+             N=200,  # number of grid segments, number of grid points Ni = N + 1
+             e=1e-10,  # absolute tolerance, TODO: switch to standardized measure
+             maxit=20,  # maximum number of Newton iterations
+             solver=None,
+             options=None,
+             **kwargs):
+        """Initializes a 1D Poisson-Nernst-Planck system description.
+
+        Expects quantities in SI units per default.
+
+        Parameters
+        ----------
+        c : (M,) ndarray, optional
+            bulk concentrations of each ionic species [mol/m^3]
+            (default: [ 0.1, 0.1 ])
+        z : (M,) ndarray, optional
+            charge of each ionic species [1] (default: [ +1, -1 ])
+        x0 : float, optional
+            left hand side reference position (default: 0)
+        L : float, optional
+            1D domain size [m] (default: 100e-9)
+        lambda_S: float, optional
+            Stern layer thickness in case of Robin BC [m] (default: 0)
+        T : float, optional
+            temperature of the solution [K] (default: 298.15)
+        delta_u : float, optional
+            potential drop across 1D cell [V] (default: 0.05)
+        relative_permittivity: float, optional
+            relative permittivity of the ionic solution [1] (default: 79)
+        vacuum_permittivity: float, optional
+            vacuum permittivity [F m^-1] (default: 8.854187817620389e-12 )
+        R : float, optional
+            molar gas constant [J mol^-1 K^-1] (default: 8.3144598)
+        F : float, optional
+            Faraday constant [C mol^-1] (default: 96485.33289)
+        N : int, optional
+            number of discretization grid segments (default: 200)
+        e : float, optional
+            absolute tolerance for Newton solver convergence (default: 1e-10)
+        maxit : int, optional
+            maximum number of Newton iterations (default: 20)
+        solver: func( func(x), x0), optional
+            solver to use (default: None, will use own simple Newton solver)
+        potential0: (N+1,) ndarray, optional (default: None)
+            potential initial values
+        concentration0: (M,N+1) ndarray, optional (default: None)
+            concentration initial values
+        """
+        self.logger = logging.getLogger(__name__)
+        super().init(**kwargs)
+
+        # default solver settings
+        self.converged = False  # solver's convergence flag
+        self.N = N  # discretization segments
+        self.e = e  # Newton solver default tolerance
+        self.maxit = maxit  # Newton solver maximum iterations
+
+        self.L = L  # 1d domain size
+        self.lambda_S = lambda_S  # Stern layer thickness
+        self.x0 = x0  # reference position
+        self.delta_u = delta_u  # potential difference
+
+        # domain
+        self.L_scaled = self.L / self.l_unit
+
+        # compact layer
+        self.lambda_S_scaled = self.lambda_S / self.l_unit
+
+        # reference position
+        self.x0_scaled = self.x0 / self.l_unit
+
+        # potential difference
+        self.delta_u_scaled = self.delta_u / self.u_unit
+
+        # print scaled quantities to log
+        self.logger.info('{:<{lwidth}s} {:> 8.4g}'.format(
+            'reduced domain size L*', self.L_scaled, lwidth=self.label_width))
+        self.logger.info('{:<{lwidth}s} {:> 8.4g}'.format(
+            'reduced compact layer thickness lambda_S*', self.lambda_S_scaled, lwidth=self.label_width))
+        self.logger.info('{:<{lwidth}s} {:> 8.4g}'.format(
+            'reduced reference position x0*', self.x0_scaled, lwidth=self.label_width))
+        self.logger.info('{:<{lwidth}s} {:> 8.4g}'.format(
+            'reduced potential delta_u*', self.delta_u_scaled, lwidth=self.label_width))
 
     def __init__(self, *args, **kwargs):
         """Same parameters as PoissonNernstPlanckSystem.init
-        
+
         Additional parameters:
         ----------------------
         bctol : float, optional
