@@ -91,5 +91,26 @@ to set some environment variables, i.e. via
 
 After doing so, FEniCS should be available within the virtual environment.
 
+## FEniCSx
+
+As of April 2024, FEniCSx is available via ppa
+
+    add-apt-repository ppa:fenics-packages/fenics
+    apt update
+    apt install fenicsx
+
+as described on https://github.com/FEniCS/dolfinx?tab=readme-ov-file#ubuntu-packages.
+
+To install `matscipy` editable in a Python `venv` while making use of the
+system-wide FEniCSx installation, the following worked on Ubuntu 20.04,
+
+    python3 -m venv --system-site-packages venv
+    source venv/bin/activate
+    pip install --upgrade pip
+    pip install --upgrade --ignore-installed numpy
+    pip install --upgrade --ignore-installed scipy
+    pip install --no-build-isolation -e .[test]
+
 # Usage
 See `../cli/electrochemistry/README.md`.
+
