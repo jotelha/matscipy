@@ -32,7 +32,7 @@ except ImportError:
     print("fenics not found: skipping fenics-dependent tests")
 
 
-class PoissonNernstPlanckSolverTest(matscipytest.MatSciPyTestCase):
+class PoissonNernstPlanckSolverFEniCSTest(matscipytest.MatSciPyTestCase):
 
     def setUp(self):
         """Provides 0.1 mM NaCl solution at 0.05 V across 100 nm open half space reference data from binary npz file"""

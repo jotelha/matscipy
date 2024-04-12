@@ -18,7 +18,7 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #
-import io
+import sys
 import matscipytest
 import numpy as np
 import os, os.path
@@ -27,13 +27,24 @@ import stat
 import tempfile
 import unittest
 
-import gmsh
+
 
 from mpi4py import MPI
 
-from dolfinx.io import XDMFFile, gmshio
+try:
+    import gmsh
+except ImportError:
+    print("gmsh not found: skipping gmsh-dependent tests")
 
-from looseversion import LooseVersion
+try:
+    import dolfinx.io
+    from dolfinx.io import XDMFFile, gmshio
+except ImportError:
+    print("dolfinx.io not found: skipping dolfinx.io-dependent tests")
+
+
+
+# from looseversion import LooseVersion
 
 
 def gmsh_square(model: gmsh.model, name: str, d=420) -> gmsh.model:
@@ -84,7 +95,8 @@ def gmsh_square(model: gmsh.model, name: str, d=420) -> gmsh.model:
 
     return model
 
-
+@unittest.skipIf("gmsh" not in sys.modules, "gmsh required")
+@unittest.skipIf("dolfinx" not in sys.modules, "dolfinx required")
 class ElectrochemistryFEMMeshTest(matscipytest.MatSciPyTestCase):
     """Tests mesh processing functionality."""
 

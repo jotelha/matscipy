@@ -23,16 +23,12 @@ import os.path
 import sys
 import unittest
 
-
 try:
-    import fenics
-    from matscipy.electrochemistry.poisson_nernst_planck_solver_fenics \
-        import PoissonNernstPlanckSystemFEniCS as PoissonNernstPlanckSystem
+    import dolfinx
 except ImportError:
-    print("fenics not found: skipping fenics-dependent tests")
+    print("dolfinx not found: skipping fenicsx-dependent tests")
 
-
-class PoissonNernstPlanckSolverTest(matscipytest.MatSciPyTestCase):
+class PoissonNernstPlanckSolverFEniCSxTest(matscipytest.MatSciPyTestCase):
 
     def setUp(self):
         """Provides 0.1 mM NaCl solution at 0.05 V across 100 nm open half space reference data from binary npz file"""
@@ -41,10 +37,13 @@ class PoissonNernstPlanckSolverTest(matscipytest.MatSciPyTestCase):
             os.path.join(self.test_path, 'electrochemistry_data',
             'NaCl_c_0.1_mM_0.1_mM_z_+1_-1_L_1e-7_u_0.05_V_seg_200_interface.npz') )
 
-    @unittest.skipIf("fenics" not in sys.modules,
-                     "fenics required")
-    def test_poisson_nernst_planck_solver_fenics_std_interface_bc(self):
+    @unittest.skipIf("dolfinx" not in sys.modules,
+                     "dolfinx required")
+    def test_poisson_nernst_planck_solver_fenicsx_std_interface_bc(self):
         """Tests PNP solver against simple interfacial BC"""
+        from matscipy.electrochemistry.poisson_nernst_planck_solver_fenicsx \
+            import PoissonNernstPlanckSystemFEniCSx as PoissonNernstPlanckSystem
+
         pnp = PoissonNernstPlanckSystem(
             c=[0.1,0.1], z=[1,-1], L=1e-7, delta_u=0.05,
             N=200, e=1e-12, maxit=20)
