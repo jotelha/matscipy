@@ -60,14 +60,14 @@ N = 200 # number of discretization grid points
 
 # define desired system
 pnp['std_interface'] = PoissonNernstPlanckSystem(
-    c, z, L, delta_u=delta_u, N=N,
+    c=c, z=z, L=L, delta_u=delta_u, N=N,
     solver="hybr", options={'xtol':1e-12})
 
 pnp['std_interface'].use_standard_interface_bc()
 uij, nij, lamj = pnp['std_interface'].solve()
 
 # define desired system
-pnp['fenics_interface'] = PoissonNernstPlanckSystemFEniCS(c, z, L, delta_u=delta_u, N=N)
+pnp['fenics_interface'] = PoissonNernstPlanckSystemFEniCS(c=c, z=z, L=L, delta_u=delta_u, N=N)
 pnp['fenics_interface'].use_standard_interface_bc()
 uij, nij, _ = pnp['fenics_interface'].solve()
 
@@ -182,7 +182,7 @@ delta_u = 0.2 # V
 N = 200
 
 pnp['std_interface_high_potential'] = PoissonNernstPlanckSystem(
-    c, z, L, delta_u=delta_u,N=N,
+    c=c, z=z, L=L, delta_u=delta_u,N=N,
     solver="hybr", options={'xtol':1e-14})
 pnp['std_interface_high_potential'].use_standard_interface_bc()
 uij, nij, lamj = pnp['std_interface_high_potential'].solve()
