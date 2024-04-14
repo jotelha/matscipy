@@ -37,9 +37,11 @@ from petsc4py import PETSc
 import ufl
 import basix.ufl
 import dolfinx.log
-
+import dolfinx.mesh
 from dolfinx.fem.petsc import NonlinearProblem
 from dolfinx.nls.petsc import NewtonSolver
+
+from dolfinx.geometry import bb_tree, compute_colliding_cells, compute_collisions_points
 
 from matscipy.electrochemistry.poisson_nernst_planck_solver_base import PoissonNernstPlanckSystemABC
 
@@ -84,7 +86,12 @@ class PoissonNernstPlanckSystemFEniCSx(PoissonNernstPlanckSystemABC):
 
     @property
     def X(self):
-        return self.mesh.coordinates().flatten()  # only 1D
+        # return self.mesh.coordinates().flatten()  # only 1D
+        # return self.mesh.geometry.x[:,0]
+        local_cells = np.arange(
+            self.mesh.topology.index_map(self.mesh.topology.dim).size_local, dtype=np.int32)
+        midpoints = dolfinx.mesh.compute_midpoints(self.mesh, self.mesh.topology.dim, local_cells)
+        return midpoints[:,0]
 
     def solve(self):
         """Evoke FEniCS FEM solver.
@@ -131,31 +138,50 @@ class PoissonNernstPlanckSystemFEniCSx(PoissonNernstPlanckSystemABC):
 
         solver = NewtonSolver(MPI.COMM_WORLD, problem)
         solver.convergence_criterion = "incremental"
-        solver.rtol = 1e-6
+        solver.rtol = 1e-9
         solver.report = True
 
-        ksp = solver.krylov_solver
-        opts = PETSc.Options()
-        option_prefix = ksp.getOptionsPrefix()
-        opts[f"{option_prefix}ksp_type"] = "cg"
-        opts[f"{option_prefix}pc_type"] = "gamg"
-        opts[f"{option_prefix}pc_factor_mat_solver_type"] = "mumps"
-        ksp.setFromOptions()
+        # ksp = solver.krylov_solver
+        # opts = PETSc.Options()
+        # option_prefix = ksp.getOptionsPrefix()
+        # opts[f"{option_prefix}ksp_type"] = "cg"
+        # opts[f"{option_prefix}pc_type"] = "gamg"
+        # opts[f"{option_prefix}pc_factor_mat_solver_type"] = "mumps"
+        # ksp.setFromOptions()
 
-        dolfinx.log.set_log_level(dolfinx.log.LogLevel.INFO)
+        # dolfinx.log.set_log_level(dolfinx.log.LogLevel.INFO)
         n, converged = solver.solve(self.w)
-        self.logger.info(f"Number of iterations: {n:d}")
+        # self.logger.info(f"Number of iterations: {n:d}")
 
         # fn.solve(F == 0, self.w, self.boundary_conditions,
         #         solver_parameters=self.solver_parameters)
 
         # store results:
-        wij = np.array([self.w(x) for x in self.X]).T
+        # wij = np.array([self.w(x) for x in self.X]).T
+        # wij = self.w.x.array.reshape(self.mesh.geometry.x.shape[0], self.M + self.K + 1).T
+        # x0 = (mesh.geometry.x[0] + mesh.geometry.x[1]) / 2.0
 
+        # see https://fenicsproject.discourse.group/t/evaluate-function-on-whole-mesh/12420/3
+        #Interpolate solution DOFs to discontinuous lagrange of zero'th order
+        dg0 = ufl.VectorElement("DG", self.mesh.ufl_cell(), 0, dim=self.M + self.K + 1)
+        W0 = dolfinx.fem.FunctionSpace(self.mesh, dg0)
+
+        w0 = dolfinx.fem.Function(W0, dtype=dolfinx.default_scalar_type)
+        w0.interpolate(self.w)
+
+        wij = w0.x.array.reshape(self.mesh.geometry.x.shape[0]-1, self.M + self.K + 1).T
+        # for x in self.X:
+        #     tree = bb_tree(self.mesh, self.mesh.geometry.dim)
+        #     cell_candidates = compute_collisions_points(tree, x)
+        #     cell = compute_colliding_cells(self.mesh, cell_candidates, x)
+        #     first_cell = cell[0]
+        #     print(x)
+        #     print(self.w.eval(x,first_cell))
+        #
         self.uij = wij[0, :]  # potential
         self.nij = wij[1:(self.M + 1), :]  # concentrations
-        self.lamj = wij[(self.M + 1):]  # Lagrange multipliers
-
+        self.lamj = wij[(self.M + 1):, :]  # Lagrange multipliers
+        #
         return self.uij, self.nij, self.lamj
 
     # def boundary_L(self, x):
@@ -172,7 +198,7 @@ class PoissonNernstPlanckSystemFEniCSx(PoissonNernstPlanckSystemABC):
         """FEniCS Dirichlet BC u0 for potential at left boundary."""
         self.boundary_conditions.extend([
             dolfinx.fem.dirichletbc(
-                dolfinx.fem.Constant(self.mesh, dolfinx.default_scalar_type(u0)),
+                dolfinx.default_scalar_type(u0),
                 self.left_boundary_dofs[0], self.W.sub(0))])
         # self.boundary_conditions.extend([
         #       fn.DirichletBC(self.W.sub(0), u0,
@@ -182,7 +208,7 @@ class PoissonNernstPlanckSystemFEniCSx(PoissonNernstPlanckSystemABC):
         """FEniCS Dirichlet BC u0 for potential at right boundary."""
         self.boundary_conditions.extend([
             dolfinx.fem.dirichletbc(
-                dolfinx.fem.Constant(self.mesh, dolfinx.default_scalar_type(u0)),
+                dolfinx.default_scalar_type(u0),
                 self.right_boundary_dofs[0], self.W.sub(0))])
         # self.boundary_conditions.extend([
         #     fn.DirichletBC(self.W.sub(0), u0,
@@ -192,7 +218,7 @@ class PoissonNernstPlanckSystemFEniCSx(PoissonNernstPlanckSystemABC):
         """FEniCS Dirichlet BC c0 for k'th ion species at left boundary."""
         self.boundary_conditions.extend([
             dolfinx.fem.dirichletbc(
-                dolfinx.fem.Constant(self.mesh, dolfinx.default_scalar_type(c0)),
+                self.mesh, dolfinx.default_scalar_type(c0),
                 self.left_boundary_dofs[k+1], self.W.sub(k+1))])
         # self.boundary_conditions.extend([
         #     fn.DirichletBC(self.W.sub(k + 1), c0,
@@ -202,7 +228,7 @@ class PoissonNernstPlanckSystemFEniCSx(PoissonNernstPlanckSystemABC):
         """FEniCS Dirichlet BC c0 for k'th ion species at right boundary."""
         self.boundary_conditions.extend([
             dolfinx.fem.dirichletbc(
-            dolfinx.fem.Constant(self.mesh, dolfinx.default_scalar_type(c0)),
+                dolfinx.default_scalar_type(c0),
                 self.right_boundary_dofs[k+1], self.W.sub(k+1))])
         # self.boundary_conditions.extend([
         #     fn.DirichletBC(self.W.sub(k + 1), c0,
@@ -363,7 +389,8 @@ class PoissonNernstPlanckSystemFEniCSx(PoissonNernstPlanckSystemABC):
         """Builds function space, call again after introducing constraints"""
         # FEniCSx interface
         # self.mesh = fn.IntervalMesh(self.N, self.x0_scaled, self.x1_scaled)
-        self.mesh = dolfinx.mesh.create_interval(MPI.COMM_WORLD, self.N, [self.x0_scaled, self.x1_scaled])
+        self.mesh = dolfinx.mesh.create_interval(MPI.COMM_WORLD, self.N,
+                                                 points=(self.x0_scaled, self.x1_scaled))
 
         self.left_boundary = dolfinx.mesh.locate_entities_boundary(
             self.mesh, dim=(self.mesh.topology.dim - 1),
@@ -372,27 +399,29 @@ class PoissonNernstPlanckSystemFEniCSx(PoissonNernstPlanckSystemABC):
             self.mesh, dim=(self.mesh.topology.dim - 1),
             marker=lambda x: np.isclose(x[0], self.x1_scaled))
 
-
-
         # construct test and trial function space from elements
         # spanned by Lagrange polynomials for the physical variables of
         # potential and concentration and global elements with a single degree
         # of freedom ('Real') for constraints.
 
         # P = fn.FiniteElement('Lagrange', fn.interval, 3)
-        P = basix.ufl.element('Lagrange', self.mesh.basix_cell(), 3)
+        # P = basix.ufl.element('Lagrange', self.mesh.basix_cell(), 3)
 
         # R = fn.FiniteElement('Real', fn.interval, 0)
         # No Real elements in fenicsx yet, see
         # https://fenicsproject.discourse.group/t/integral-constrains-in-fenicsx/11429
         # suggested the use of https://github.com/jorgensd/dolfinx_mpc
         # R = basix.ufl.element('Real', self.mesh.basix_cell(), 0)
-        R = basix.ufl.element('Lagrange', self.mesh.basix_cell(), 3)
+        # R = basix.ufl.element('Lagrange', self.mesh.basix_cell(), 3)
 
-        elements = [P] * (1 + self.M) + [R] * self.K
+        # elements = [P] * (1 + self.M) + [R] * self.K
 
         # H = fn.MixedElement(elements)
-        H = basix.ufl.mixed_element(elements)
+        # H = basix.ufl.mixed_element(elements)
+
+        # mixed elements introduce artifacts in the solution, vecto elements apparently work fine
+        # ignore constraints
+        H = ufl.VectorElement("Lagrange", self.mesh.ufl_cell(), 3, dim=self.M+1)
 
         # self.W = fn.FunctionSpace(self.mesh, H)
         self.W = dolfinx.fem.FunctionSpace(self.mesh, H)
@@ -400,19 +429,19 @@ class PoissonNernstPlanckSystemFEniCSx(PoissonNernstPlanckSystemABC):
         # boundary degrees of freedom
         self.left_boundary_dofs = []
         for k in range(0, self.M + 1):
-            Q, _ = self.W.sub(k).collapse()
+            # Q, _ = self.W.sub(k).collapse()
             self.left_boundary_dofs.append(
                 dolfinx.fem.locate_dofs_topological(
-                    V=(self.W.sub(k), Q),
+                    V=self.W.sub(k),
                     entity_dim=self.mesh.topology.dim - 1,
                     entities=self.left_boundary))
 
         self.right_boundary_dofs = []
         for k in range(0, self.M + 1):
-            Q, _ = self.W.sub(k).collapse()
+            # Q, _ = self.W.sub(k).collapse()
             self.right_boundary_dofs.append(
                 dolfinx.fem.locate_dofs_topological(
-                    V=(self.W.sub(k), Q),
+                    V=self.W.sub(k),
                     entity_dim=self.mesh.topology.dim - 1,
                     entities=self.right_boundary))
 
@@ -420,30 +449,21 @@ class PoissonNernstPlanckSystemFEniCSx(PoissonNernstPlanckSystemABC):
         # self.w = fn.Function(self.W)
         self.w = dolfinx.fem.Function(self.W)
 
-        # set initial values if available
-        # P = fn.FunctionSpace(self.mesh, 'P', 1)
-        # dof2vtx = fn.vertex_to_dof_map(P)
-        # if self.ui0 is not None:
-        #     x = np.linspace(self.x0_scaled, self.x1_scaled, self.ui0.shape[0])
-        #     ui0 = scipy.interpolate.interp1d(x, self.ui0)
-        #     # use linear interpolation on mesh
-        #     self.u0_func = fn.Function(P)
-        #     self.u0_func.vector()[:] = ui0(self.X)[dof2vtx]
-        #     fn.assign(self.w.sub(0),
-        #               fn.interpolate(self.u0_func, self.W.sub(0).collapse()))
-        #
-        # if self.ni0 is not None:
-        #     x = np.linspace(self.x0_scaled, self.x1_scaled, self.ni0.shape[1])
-        #     ni0 = scipy.interpolate.interp1d(x, self.ni0)
-        #     self.p0_func = [fn.Function(P)] * self.ni0.shape[0]
-        #     for k in range(self.ni0.shape[0]):
-        #         self.p0_func[k].vector()[:] = ni0(self.X)[k, :][dof2vtx]
-        #         fn.assign(self.w.sub(1 + k),
-        #                   fn.interpolate(self.p0_func[k], self.W.sub(k + 1).collapse()))
+        # set uniform initial values
+        if self.ui0 is not None:
+            self.w.sub(0).interpolate(lambda x: self.ui0 * np.ones(x[0].shape))
+
+        if self.ni0 is not None:
+            for k in range(self.ni0.shape[0]):
+                self.w.sub(k+1).interpolate(lambda x: self.ni0[k] * np.ones(x[0].shape))
+
+        self.w.x.scatter_forward()
 
         # u represents voltage , p concentrations
         # uplam = fn.split(self.w)
-        uplam = self.w.split()
+        # uplam = self.w.split() # # apparently causes issues within PETSc,
+        # see https://fenicsproject.discourse.group/t/how-to-debug-the-petsc-error/13406
+        uplam = ufl.split(self.w)
         self.u, self.p, self.lam = (
             uplam[0], [*uplam[1:(self.M + 1)]], [*uplam[(self.M + 1):]])
 
