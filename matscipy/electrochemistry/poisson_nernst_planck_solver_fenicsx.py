@@ -28,37 +28,18 @@ Authors:
 """
 import logging
 import numpy as np
-import scipy.interpolate
-# import fenics as fn
 
 from mpi4py import MPI
-from petsc4py import PETSc
+# from petsc4py import PETSc
 
 import ufl
-import basix.ufl
 import dolfinx.log
 import dolfinx.mesh
 from dolfinx.fem.petsc import NonlinearProblem
 from dolfinx.nls.petsc import NewtonSolver
 
-from dolfinx.geometry import bb_tree, compute_colliding_cells, compute_collisions_points
-
 from matscipy.electrochemistry.poisson_nernst_planck_solver_base import PoissonNernstPlanckSystemABC
 
-
-# class Boundary(fn.SubDomain):
-#     """Mark a point to be within the domain boundary for fenics."""
-#
-#     # Boundary causes crash kernel if __init__ does not call super().__init__()
-#     def __init__(self, x0=0, tol=1e-14):
-#         super().__init__()
-#         self.tol = tol
-#         self.x0 = x0
-#
-#     def inside(self, x, on_boundary):
-#         """Mark a point to be within the domain boundary for fenics."""
-#         return on_boundary and fn.near(x[0], self.x0, self.tol)
-#
 
 class PoissonNernstPlanckSystemFEniCSx(PoissonNernstPlanckSystemABC):
     """Describes and solves a 1D Poisson-Nernst-Planck system with FEniCSx FEM."""
@@ -86,8 +67,6 @@ class PoissonNernstPlanckSystemFEniCSx(PoissonNernstPlanckSystemABC):
 
     @property
     def X(self):
-        # return self.mesh.coordinates().flatten()  # only 1D
-        # return self.mesh.geometry.x[:,0]
         local_cells = np.arange(
             self.mesh.topology.index_map(self.mesh.topology.dim).size_local, dtype=np.int32)
         midpoints = dolfinx.mesh.compute_midpoints(self.mesh, self.mesh.topology.dim, local_cells)
@@ -141,6 +120,7 @@ class PoissonNernstPlanckSystemFEniCSx(PoissonNernstPlanckSystemABC):
         solver.rtol = 1e-9
         solver.report = True
 
+        # suggestions from fenicsx tutorial
         # ksp = solver.krylov_solver
         # opts = PETSc.Options()
         # option_prefix = ksp.getOptionsPrefix()
@@ -149,20 +129,11 @@ class PoissonNernstPlanckSystemFEniCSx(PoissonNernstPlanckSystemABC):
         # opts[f"{option_prefix}pc_factor_mat_solver_type"] = "mumps"
         # ksp.setFromOptions()
 
-        # dolfinx.log.set_log_level(dolfinx.log.LogLevel.INFO)
         n, converged = solver.solve(self.w)
-        # self.logger.info(f"Number of iterations: {n:d}")
-
-        # fn.solve(F == 0, self.w, self.boundary_conditions,
-        #         solver_parameters=self.solver_parameters)
 
         # store results:
-        # wij = np.array([self.w(x) for x in self.X]).T
-        # wij = self.w.x.array.reshape(self.mesh.geometry.x.shape[0], self.M + self.K + 1).T
-        # x0 = (mesh.geometry.x[0] + mesh.geometry.x[1]) / 2.0
-
         # see https://fenicsproject.discourse.group/t/evaluate-function-on-whole-mesh/12420/3
-        #Interpolate solution DOFs to discontinuous lagrange of zero'th order
+        # Interpolate solution DOFs to discontinuous lagrange of zero'th order
         dg0 = ufl.VectorElement("DG", self.mesh.ufl_cell(), 0, dim=self.M + self.K + 1)
         W0 = dolfinx.fem.FunctionSpace(self.mesh, dg0)
 
@@ -170,29 +141,11 @@ class PoissonNernstPlanckSystemFEniCSx(PoissonNernstPlanckSystemABC):
         w0.interpolate(self.w)
 
         wij = w0.x.array.reshape(self.mesh.geometry.x.shape[0]-1, self.M + self.K + 1).T
-        # for x in self.X:
-        #     tree = bb_tree(self.mesh, self.mesh.geometry.dim)
-        #     cell_candidates = compute_collisions_points(tree, x)
-        #     cell = compute_colliding_cells(self.mesh, cell_candidates, x)
-        #     first_cell = cell[0]
-        #     print(x)
-        #     print(self.w.eval(x,first_cell))
-        #
         self.uij = wij[0, :]  # potential
         self.nij = wij[1:(self.M + 1), :]  # concentrations
         self.lamj = wij[(self.M + 1):, :]  # Lagrange multipliers
-        #
-        return self.uij, self.nij, self.lamj
 
-    # def boundary_L(self, x):
-    #     """Mark left boundary. Returns True if x on left boundary."""
-    #     # return on_boundary and fn.near(x[0], self.x0_scaled, self.bctol)
-    #     return np.isclose(x[0], self.x0_scaled)
-    #
-    # def boundary_R(self, x):
-    #     """Mark right boundary. Returns True if x on right boundary."""
-    #     # return on_boundary and fn.near(x[0], self.x1_scaled, self.bctol)
-    #     return np.isclose(x[0], self.x1_scaled)
+        return self.uij, self.nij, self.lamj
 
     def apply_left_potential_dirichlet_bc(self, u0):
         """FEniCS Dirichlet BC u0 for potential at left boundary."""
@@ -200,9 +153,6 @@ class PoissonNernstPlanckSystemFEniCSx(PoissonNernstPlanckSystemABC):
             dolfinx.fem.dirichletbc(
                 dolfinx.default_scalar_type(u0),
                 self.left_boundary_dofs[0], self.W.sub(0))])
-        # self.boundary_conditions.extend([
-        #       fn.DirichletBC(self.W.sub(0), u0,
-        #                lambda x, on_boundary: self.boundary_L(x, on_boundary))])
 
     def apply_right_potential_dirichlet_bc(self, u0):
         """FEniCS Dirichlet BC u0 for potential at right boundary."""
@@ -210,9 +160,6 @@ class PoissonNernstPlanckSystemFEniCSx(PoissonNernstPlanckSystemABC):
             dolfinx.fem.dirichletbc(
                 dolfinx.default_scalar_type(u0),
                 self.right_boundary_dofs[0], self.W.sub(0))])
-        # self.boundary_conditions.extend([
-        #     fn.DirichletBC(self.W.sub(0), u0,
-        #                lambda x, on_boundary: self.boundary_R(x, on_boundary))])
 
     def apply_left_concentration_dirichlet_bc(self, k, c0):
         """FEniCS Dirichlet BC c0 for k'th ion species at left boundary."""
@@ -220,9 +167,6 @@ class PoissonNernstPlanckSystemFEniCSx(PoissonNernstPlanckSystemABC):
             dolfinx.fem.dirichletbc(
                 self.mesh, dolfinx.default_scalar_type(c0),
                 self.left_boundary_dofs[k+1], self.W.sub(k+1))])
-        # self.boundary_conditions.extend([
-        #     fn.DirichletBC(self.W.sub(k + 1), c0,
-        #                    lambda x, on_boundary: self.boundary_L(x, on_boundary))])
 
     def apply_right_concentration_dirichlet_bc(self, k, c0):
         """FEniCS Dirichlet BC c0 for k'th ion species at right boundary."""
@@ -230,9 +174,6 @@ class PoissonNernstPlanckSystemFEniCSx(PoissonNernstPlanckSystemABC):
             dolfinx.fem.dirichletbc(
                 dolfinx.default_scalar_type(c0),
                 self.right_boundary_dofs[k+1], self.W.sub(k+1))])
-        # self.boundary_conditions.extend([
-        #     fn.DirichletBC(self.W.sub(k + 1), c0,
-        #                    lambda x, on_boundary: self.boundary_R(x, on_boundary))])
 
     # TODO: Robin BC!
     def apply_left_potential_robin_bc(self, u0, lam0):
@@ -283,7 +224,7 @@ class PoissonNernstPlanckSystemFEniCSx(PoissonNernstPlanckSystemABC):
         number conservation within interval."""
         self.boundary_conditions = []
 
-        # Introduce a Lagrange multiplier per species anderson
+        # Introduce a Lagrange multiplier per species
         # rebuild discretization scheme (function spaces)
         self.K = self.M
         self.discretize()
@@ -388,7 +329,6 @@ class PoissonNernstPlanckSystemFEniCSx(PoissonNernstPlanckSystemABC):
     def discretize(self):
         """Builds function space, call again after introducing constraints"""
         # FEniCSx interface
-        # self.mesh = fn.IntervalMesh(self.N, self.x0_scaled, self.x1_scaled)
         self.mesh = dolfinx.mesh.create_interval(MPI.COMM_WORLD, self.N,
                                                  points=(self.x0_scaled, self.x1_scaled))
 
@@ -404,26 +344,21 @@ class PoissonNernstPlanckSystemFEniCSx(PoissonNernstPlanckSystemABC):
         # potential and concentration and global elements with a single degree
         # of freedom ('Real') for constraints.
 
-        # P = fn.FiniteElement('Lagrange', fn.interval, 3)
         # P = basix.ufl.element('Lagrange', self.mesh.basix_cell(), 3)
 
-        # R = fn.FiniteElement('Real', fn.interval, 0)
         # No Real elements in fenicsx yet, see
         # https://fenicsproject.discourse.group/t/integral-constrains-in-fenicsx/11429
         # suggested the use of https://github.com/jorgensd/dolfinx_mpc
         # R = basix.ufl.element('Real', self.mesh.basix_cell(), 0)
-        # R = basix.ufl.element('Lagrange', self.mesh.basix_cell(), 3)
 
         # elements = [P] * (1 + self.M) + [R] * self.K
 
-        # H = fn.MixedElement(elements)
         # H = basix.ufl.mixed_element(elements)
 
-        # mixed elements introduce artifacts in the solution, vecto elements apparently work fine
-        # ignore constraints
+        # mixed elements introduce artifacts in the solution, vector elements apparently work fine
+        # ignore constraints for now
         H = ufl.VectorElement("Lagrange", self.mesh.ufl_cell(), 3, dim=self.M+1)
 
-        # self.W = fn.FunctionSpace(self.mesh, H)
         self.W = dolfinx.fem.FunctionSpace(self.mesh, H)
 
         # boundary degrees of freedom
@@ -446,7 +381,6 @@ class PoissonNernstPlanckSystemFEniCSx(PoissonNernstPlanckSystemABC):
                     entities=self.right_boundary))
 
         # solution functions
-        # self.w = fn.Function(self.W)
         self.w = dolfinx.fem.Function(self.W)
 
         # set uniform initial values
@@ -460,7 +394,6 @@ class PoissonNernstPlanckSystemFEniCSx(PoissonNernstPlanckSystemABC):
         self.w.x.scatter_forward()
 
         # u represents voltage , p concentrations
-        # uplam = fn.split(self.w)
         # uplam = self.w.split() # # apparently causes issues within PETSc,
         # see https://fenicsproject.discourse.group/t/how-to-debug-the-petsc-error/13406
         uplam = ufl.split(self.w)
