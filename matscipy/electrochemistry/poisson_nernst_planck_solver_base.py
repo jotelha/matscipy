@@ -40,21 +40,25 @@ class PoissonNernstPlanckSystemABC(ABC):
     @property
     @abstractmethod
     def grid(self):
+        """discretization grid in SI units [m]"""
         ...
 
     @property
     @abstractmethod
     def potential(self):
+        """electrostatic potential in SI units [V]"""
         ...
 
     @property
     @abstractmethod
     def concentration(self):
+        """concentration distributions in SI units [mol/m^3]"""
         ...
 
     @property
     @abstractmethod
     def charge_density(self):
+        """charge density in SI units [C/m^3]"""
         ...
 
     @property
