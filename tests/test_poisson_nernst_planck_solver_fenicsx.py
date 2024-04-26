@@ -45,22 +45,17 @@ class PoissonNernstPlanckSolverFEniCSxTest(matscipytest.MatSciPyTestCase):
         from matscipy.electrochemistry.poisson_nernst_planck_solver_fenicsx \
             import PoissonNernstPlanckSystemFEniCSx as PoissonNernstPlanckSystem
 
-        # Note: when solving with 201 grid points, we have 200 cells.
-        # solution is returned not on grid points, but on cell centers,
-        # hence 201 grid points means 200 data points in solution.
         pnp = PoissonNernstPlanckSystem(
             c=[0.1,0.1], z=[1,-1], L=1e-7, delta_u=0.05,
-            N=201, e=1e-12, maxit=20)
+            N=200, e=1e-12, maxit=20)
         pnp.use_standard_interface_bc()
         pnp.solve()
-        # Consequently, solution is way off reference solution, as we are not
-        # excatly looking at the same points.
 
-        # Reference data has been generated with controlled-volume solver and is slightly off the FEM results,
-        # hence the generous tolerances below.
-        self.assertArrayAlmostEqual(pnp.grid, self.ref_data ['x'])
-        self.assertArrayAlmostEqual(pnp.potential, self.ref_data ['u'], 1e-3)
-        self.assertArrayAlmostEqual(pnp.concentration, self.ref_data ['c'], 2e-2)
+        # Reference data has been generated with controlled-volume solver and
+        # is slightly off the FEM results, hence the generous tolerances below.
+        self.assertArrayAlmostEqual(pnp.grid, self.ref_data['x'])
+        self.assertArrayAlmostEqual(pnp.potential, self.ref_data['u'], 1e-6)
+        self.assertArrayAlmostEqual(pnp.concentration, self.ref_data['c'], 1e-5)
 
 
 if __name__ == '__main__':

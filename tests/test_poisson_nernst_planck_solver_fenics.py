@@ -51,8 +51,8 @@ class PoissonNernstPlanckSolverFEniCSTest(matscipytest.MatSciPyTestCase):
         pnp.use_standard_interface_bc()
         pnp.solve()
 
-        # Reference data has been generated with controlled-volume solver and is slightly off the FEM results,
-        # hence the generous tolerances below
+        # Reference data has been generated with controlled-volume solver and
+        # is slightly off the FEM results, hence the generous tolerances below.
         self.assertArrayAlmostEqual(pnp.grid, self.ref_data ['x'])
         self.assertArrayAlmostEqual(pnp.potential, self.ref_data ['u'], 1e-6)
         self.assertArrayAlmostEqual(pnp.concentration, self.ref_data ['c'], 1e-5)
