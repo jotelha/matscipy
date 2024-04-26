@@ -46,8 +46,8 @@ except ImportError:
 
 # from looseversion import LooseVersion
 
-
-def gmsh_square(model: gmsh.model, name: str, d=420) -> gmsh.model:
+# 10.36 [l] is equivalent to 100 nm at Debye length 9.65 nm.
+def gmsh_square(model: gmsh.model, name: str, d=10.36) -> gmsh.model:
     """Create a Gmsh model of a square.
 
     Args:
@@ -108,7 +108,7 @@ class ElectrochemistryFEMMeshTest(matscipytest.MatSciPyTestCase):
         gmsh.initialize()
 
         model = gmsh.model()
-        model = gmsh_square(model, "square", d=420)
+        model = gmsh_square(model, "square", d=10.36)
 
         self.msh_path = os.path.join(self.data_path, 'square.msh')
         if not os.path.isfile(self.msh_path):
