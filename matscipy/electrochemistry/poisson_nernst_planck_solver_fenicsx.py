@@ -46,16 +46,16 @@ class PoissonNernstPlanckSystemFEniCSx(PoissonNernstPlanckSystemABC):
 
     @property
     def grid(self):
-        return self.X * self.l_unit
+        return self.grid_dimensionless * self.l_unit
 
     @property
     def potential(self):
-        return self.uij * self.u_unit
+        return self.dimensionless_potential_on_mesh_nodes * self.u_unit
 
     @property
     def concentration(self):
-        return np.where(self.nij > np.finfo('float64').resolution,
-                        self.nij * self.c_unit, 0.0)
+        return np.where(self.dimensionless_concentrations_on_mesh_nodes > np.finfo('float64').resolution,
+                        self.dimensionless_concentrations_on_mesh_nodes * self.c_unit, 0.0)
 
     @property
     def charge_density(self):
@@ -66,22 +66,19 @@ class PoissonNernstPlanckSystemFEniCSx(PoissonNernstPlanckSystemABC):
         return self.x0_scaled + self.L_scaled
 
     @property
-    def X(self):
-        local_cells = np.arange(
-            self.mesh.topology.index_map(self.mesh.topology.dim).size_local, dtype=np.int32)
-        midpoints = dolfinx.mesh.compute_midpoints(self.mesh, self.mesh.topology.dim, local_cells)
-        return midpoints[:,0]
+    def grid_dimensionless(self):
+        return self.mesh.geometry.x[:, 0]
 
     def solve(self):
         """Evoke FEniCS FEM solver.
 
         Returns
         -------
-        uij : (Ni,) ndarray
+        dimensionless_potential_on_mesh_nodes : (Ni,) ndarray
             potential at Ni grid points
-        nij : (M,Nij) ndarray
+        dimensionless_concentrations_on_mesh_nodes : (M,Nij) ndarray
             concentrations of M species at Ni grid points
-        lamj: (L,) ndarray
+        dimensionless_lagrange_multipliers_on_mesh_nodes: (L,) ndarray
             value of L Lagrange multipliers
         """
 
@@ -130,22 +127,22 @@ class PoissonNernstPlanckSystemFEniCSx(PoissonNernstPlanckSystemABC):
         # ksp.setFromOptions()
 
         n, converged = solver.solve(self.w)
+        self.logger.info("Converged: %s, %d iterations", converged, n)
 
-        # store results:
-        # see https://fenicsproject.discourse.group/t/evaluate-function-on-whole-mesh/12420/3
-        # Interpolate solution DOFs to discontinuous lagrange of zero'th order
-        dg0 = ufl.VectorElement("DG", self.mesh.ufl_cell(), 0, dim=self.M + self.K + 1)
-        W0 = dolfinx.fem.FunctionSpace(self.mesh, dg0)
+        # compute solution on mesh nodes
+        bb_tree = dolfinx.geometry.bb_tree(self.mesh, 1)
+        cell_candidates = dolfinx.geometry.compute_collisions_points(bb_tree, self.mesh.geometry.x)
+        cell_list = dolfinx.geometry.compute_colliding_cells(self.mesh, cell_candidates, self.mesh.geometry.x)
+        wij = np.array([self.w.eval(p, cell_list.links(i)[0]) for i, p in enumerate(self.mesh.geometry.x)]).T
 
-        w0 = dolfinx.fem.Function(W0, dtype=dolfinx.default_scalar_type)
-        w0.interpolate(self.w)
+        self.dimensionless_potential_on_mesh_nodes = wij[0, :]  # potential
+        self.dimensionless_concentrations_on_mesh_nodes = wij[1:(self.M + 1), :]  # concentrations
+        self.dimensionless_lagrange_multipliers_on_mesh_nodes = wij[(self.M + 1):, :]  # Lagrange multipliers
 
-        wij = w0.x.array.reshape(self.mesh.geometry.x.shape[0]-1, self.M + self.K + 1).T
-        self.uij = wij[0, :]  # potential
-        self.nij = wij[1:(self.M + 1), :]  # concentrations
-        self.lamj = wij[(self.M + 1):, :]  # Lagrange multipliers
+        return (self.dimensionless_potential_on_mesh_nodes,
+                self.dimensionless_concentrations_on_mesh_nodes,
+                self.dimensionless_lagrange_multipliers_on_mesh_nodes)
 
-        return self.uij, self.nij, self.lamj
 
     def apply_left_potential_dirichlet_bc(self, u0):
         """FEniCS Dirichlet BC u0 for potential at left boundary."""
@@ -175,21 +172,6 @@ class PoissonNernstPlanckSystemFEniCSx(PoissonNernstPlanckSystemABC):
                 dolfinx.default_scalar_type(c0),
                 self.right_boundary_dofs[k+1], self.W.sub(k+1))])
 
-    # TODO: Robin BC!
-    def apply_left_potential_robin_bc(self, u0, lam0):
-        self.logger.warning("Not implemented!")
-
-    def apply_right_potential_robin_bc(self, u0, lam0):
-        self.logger.warning("Not implemented!")
-
-    def apply_number_conservation_constraint(self, k, c0):
-        """
-        Enforce number conservation constraint via Lagrange multiplier.
-        See https://fenicsproject.org/docs/dolfin/1.6.0/python/demo/documented/neumann-poisson/python/documentation.html
-        """
-        self.constraints += self.lam[k] * self.q[k] * ufl.dx \
-                            + (self.p[k] - c0) * self.mu[k] * ufl.dx
-
     def apply_potential_dirichlet_bc(self, u0, u1):
         """Potential Dirichlet BC u0 and u1 on left and right boundary."""
         self.apply_left_potential_dirichlet_bc(u0)
@@ -217,114 +199,6 @@ class PoissonNernstPlanckSystemFEniCSx(PoissonNernstPlanckSystemABC):
             self.logger.info(('Ion species {:02d} right hand side concentration '
                               'Dirichlet boundary condition: c1 = {:> 8.4g}').format(k, self.c_scaled[k]))
             self.apply_right_concentration_dirichlet_bc(k, self.c_scaled[k])
-
-    def use_standard_cell_bc(self):
-        """
-        Interfaces at left hand side and right hand side, species-wise
-        number conservation within interval."""
-        self.boundary_conditions = []
-
-        # Introduce a Lagrange multiplier per species
-        # rebuild discretization scheme (function spaces)
-        self.K = self.M
-        self.discretize()
-
-        # Potential Dirichlet BC
-        self.u0 = self.delta_u_scaled / 2.
-        self.u1 = - self.delta_u_scaled / 2.
-        self.logger.info('{:>{lwidth}s} u0 = {:< 8.4g}'.format(
-            'Left hand side Dirichlet boundary condition', self.u0, lwidth=self.label_width))
-        self.logger.info('{:>{lwidth}s} u1 = {:< 8.4g}'.format(
-            'Right hand side Dirichlet boundary condition', self.u1, lwidth=self.label_width))
-
-        self.apply_potential_dirichlet_bc(self.u0, self.u1)
-
-        # Number conservation constraints
-        self.constraints = 0
-        N0 = self.L_scaled * self.c_scaled  # total amount of species in cell
-        for k in range(self.M):
-            self.logger.info('{:>{lwidth}s} N0 = {:<8.4g}'.format(
-                'Ion species {:02d} number conservation constraint'.format(k),
-                N0[k], lwidth=self.label_width))
-            self.apply_number_conservation_constraint(k, self.c_scaled[k])
-
-    def use_central_reference_concentration_based_cell_bc(self):
-        """
-        Interfaces at left hand side and right hand side, species-wise
-        concentration fixed at cell center."""
-        self.boundary_conditions = []
-
-        # Introduce a Lagrange multiplier per species anderson
-        # rebuild discretization scheme (function spaces)
-        # self.K = self.M
-        # self.discretize()
-
-        # Potential Dirichlet BC
-        self.u0 = self.delta_u_scaled / 2.
-        self.u1 = - self.delta_u_scaled / 2.
-        self.logger.info('{:>{lwidth}s} u0 = {:< 8.4g}'.format(
-            'Left hand side Dirichlet boundary condition', self.u0, lwidth=self.label_width))
-        self.logger.info('{:>{lwidth}s} u1 = {:< 8.4g}'.format(
-            'Right hand side Dirichlet boundary condition', self.u1, lwidth=self.label_width))
-
-        self.apply_potential_dirichlet_bc(self.u0, self.u1)
-
-        for k in range(self.M):
-            self.logger.info(
-                'Ion species {:02d} reference concentration condition: c1 = {:> 8.4g} at cell center'.format(
-                    k, self.c_scaled[k]))
-            self.apply_central_reference_concentration_constraint(k, self.c_scaled[k])
-
-    def use_stern_layer_cell_bc(self):
-        """
-        Interfaces at left hand side and right hand side, species-wise
-        number conservation within interval."""
-        self.boundary_conditions = []
-
-        # Introduce a Lagrange multiplier per species anderson
-        # rebuild discretization scheme (function spaces)
-        self.constraints = 0
-        self.K = self.M
-        self.discretize()
-
-        # Potential Dirichlet BC
-        self.u0 = self.delta_u_scaled / 2.
-        self.u1 = - self.delta_u_scaled / 2.
-
-        boundary_markers = fn.MeshFunction(
-            'size_t', self.mesh, self.mesh.topology().dim() - 1)
-
-        bx = [
-            Boundary(x0=self.x0_scaled, tol=self.bctol),
-            Boundary(x0=self.x1_scaled, tol=self.bctol)]
-
-        # Boundary.mark crashes the kernel if Boundary is internal class
-        for i, b in enumerate(bx):
-            b.mark(boundary_markers, i)
-
-        boundary_conditions = {
-            0: {'Robin': (1. / self.lambda_S_scaled, self.u0)},
-            1: {'Robin': (1. / self.lambda_S_scaled, self.u1)},
-        }
-
-        ds = fn.Measure('ds', domain=self.mesh, subdomain_data=boundary_markers)
-
-        integrals_R = []
-        for i in boundary_conditions:
-            if 'Robin' in boundary_conditions[i]:
-                r, s = boundary_conditions[i]['Robin']
-                integrals_R.append(r * (self.u - s) * self.v * ds(i))
-
-        self.constraints += sum(integrals_R)
-
-        # Number conservation constraints
-
-        N0 = self.L_scaled * self.c_scaled  # total amount of species in cell
-        for k in range(self.M):
-            self.logger.info('{:>{lwidth}s} N0 = {:<8.4g}'.format(
-                'Ion species {:02d} number conservation constraint'.format(k),
-                N0[k], lwidth=self.label_width))
-            self.apply_number_conservation_constraint(k, self.c_scaled[k])
 
     def discretize(self):
         """Builds function space, call again after introducing constraints"""
