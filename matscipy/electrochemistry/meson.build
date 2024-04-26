@@ -9,6 +9,7 @@ python_sources = [
     'poisson_nernst_planck_solver.py',
     'poisson_nernst_planck_solver_fenics.py',
     'poisson_nernst_planck_solver_fenicsx.py',
+    'poisson_nernst_planck_solver_2d_fenicsx.py',
     'steric_correction.py'
 ]
 
