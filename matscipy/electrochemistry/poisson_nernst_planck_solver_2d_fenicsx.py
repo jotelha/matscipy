@@ -32,6 +32,7 @@ import numpy as np
 from mpi4py import MPI
 
 import ufl
+import basix
 import dolfinx.log
 import dolfinx.mesh
 from dolfinx.fem.petsc import NonlinearProblem
@@ -193,18 +194,18 @@ class PoissonNernstPlanckSystemFEniCSx2d(PoissonNernstPlanckSystemABC):
         self.logger.info("Converged: %s, %d iterations", converged, n)
 
         # compute solution on mesh nodes
-        bb_tree = dolfinx.geometry.bb_tree(self.mesh, 2)
-        cell_candidates = dolfinx.geometry.compute_collisions_points(bb_tree, self.mesh.geometry.x)
-        cell_list = dolfinx.geometry.compute_colliding_cells(self.mesh, cell_candidates, self.mesh.geometry.x)
-        wij = np.array([self.w.eval(p, cell_list.links(i)[0]) for i, p in enumerate(self.mesh.geometry.x)]).T
-
-        self.dimensionless_potential_on_mesh_nodes = wij[0, :]  # potential
-        self.dimensionless_concentrations_on_mesh_nodes = wij[1:(self.M + 1), :]  # concentrations
-        self.dimensionless_lagrange_multipliers_on_mesh_nodes = wij[(self.M + 1):, :]  # Lagrange multipliers
-
-        return (self.dimensionless_potential_on_mesh_nodes,
-                self.dimensionless_concentrations_on_mesh_nodes,
-                self.dimensionless_lagrange_multipliers_on_mesh_nodes)
+        # bb_tree = dolfinx.geometry.bb_tree(self.mesh, 2)
+        # cell_candidates = dolfinx.geometry.compute_collisions_points(bb_tree, self.mesh.geometry.x)
+        # cell_list = dolfinx.geometry.compute_colliding_cells(self.mesh, cell_candidates, self.mesh.geometry.x)
+        # wij = np.array([self.w.eval(p, cell_list.links(i)[0]) for i, p in enumerate(self.mesh.geometry.x)]).T
+        #
+        # self.dimensionless_potential_on_mesh_nodes = wij[0, :]  # potential
+        # self.dimensionless_concentrations_on_mesh_nodes = wij[1:(self.M + 1), :]  # concentrations
+        # self.dimensionless_lagrange_multipliers_on_mesh_nodes = wij[(self.M + 1):, :]  # Lagrange multipliers
+        #
+        # return (self.dimensionless_potential_on_mesh_nodes,
+        #         self.dimensionless_concentrations_on_mesh_nodes,
+        #         self.dimensionless_lagrange_multipliers_on_mesh_nodes)
 
     def apply_potential_dirichlet_bc(self, u0, group):
         """FEniCS Dirichlet BC u0 for potential at boundary group.
@@ -269,20 +270,20 @@ class PoissonNernstPlanckSystemFEniCSx2d(PoissonNernstPlanckSystemABC):
         # potential and concentration and global elements with a single degree
         # of freedom ('Real') for constraints.
 
-        # P = basix.ufl.element('Lagrange', self.mesh.basix_cell(), 3)
+        P = basix.ufl.element('Lagrange', self.mesh.basix_cell(), 3)
 
         # No Real elements in fenicsx yet, see
         # https://fenicsproject.discourse.group/t/integral-constrains-in-fenicsx/11429
         # suggested the use of https://github.com/jorgensd/dolfinx_mpc
         # R = basix.ufl.element('Real', self.mesh.basix_cell(), 0)
 
-        # elements = [P] * (1 + self.M) + [R] * self.K
+        elements = [P] * (1 + self.M) # + [R] * self.K
 
-        # H = basix.ufl.mixed_element(elements)
+        H = basix.ufl.mixed_element(elements)
 
         # mixed elements introduce artifacts in the solution, vector elements apparently work fine
         # ignore constraints for now
-        H = ufl.VectorElement("Lagrange", self.mesh.ufl_cell(), 3, dim=self.M+1)
+        # H = ufl.VectorElement("Lagrange", self.mesh.ufl_cell(), 3, dim=self.M+1)
 
         self.W = dolfinx.fem.FunctionSpace(self.mesh, H)
 
