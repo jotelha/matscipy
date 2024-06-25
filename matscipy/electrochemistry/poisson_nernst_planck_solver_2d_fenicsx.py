@@ -285,12 +285,12 @@ class PoissonNernstPlanckSystemFEniCSx2d(PoissonNernstPlanckSystemABC):
         # ignore constraints for now
         # H = ufl.VectorElement("Lagrange", self.mesh.ufl_cell(), 3, dim=self.M+1)
 
-        self.W = dolfinx.fem.FunctionSpace(self.mesh, H)
+        self.W = dolfinx.fem.functionspace(self.mesh, H)
 
         # boundary degrees of freedom
         self.unique_facet_markers = np.unique(self.facet_markers.values)
 
-        self.logger.info("Identified %d distinc boundaries.", len(self.unique_facet_markers))
+        self.logger.info("Identified %d distinct boundaries.", len(self.unique_facet_markers))
         self.boundary_dofs = {}
         for facet_marker in self.unique_facet_markers:
             self.boundary_dofs[facet_marker] = []
