@@ -30,9 +30,10 @@ import logging
 import numpy as np
 
 from mpi4py import MPI
-# from petsc4py import PETSc
+from petsc4py import PETSc
 
 import ufl
+import basix
 import dolfinx.log
 import dolfinx.mesh
 from dolfinx.fem.petsc import NonlinearProblem
@@ -133,7 +134,13 @@ class PoissonNernstPlanckSystemFEniCSx(PoissonNernstPlanckSystemABC):
         bb_tree = dolfinx.geometry.bb_tree(self.mesh, 1)
         cell_candidates = dolfinx.geometry.compute_collisions_points(bb_tree, self.mesh.geometry.x)
         cell_list = dolfinx.geometry.compute_colliding_cells(self.mesh, cell_candidates, self.mesh.geometry.x)
-        wij = np.array([self.w.eval(p, cell_list.links(i)[0]) for i, p in enumerate(self.mesh.geometry.x)]).T
+
+        wij = np.array([
+                [self.w.sub(j).eval(p, cell_list.links(i)[0]) for i, p in enumerate(self.mesh.geometry.x)]
+                for j in range(self.M+1)])
+
+        # above will create an array of e.g. (3, 201, 1), reshape to e.g. (3, 201)
+        wij = wij.reshape(wij.shape[:2])
 
         self.dimensionless_potential_on_mesh_nodes = wij[0, :]  # potential
         self.dimensionless_concentrations_on_mesh_nodes = wij[1:(self.M + 1), :]  # concentrations
@@ -218,20 +225,20 @@ class PoissonNernstPlanckSystemFEniCSx(PoissonNernstPlanckSystemABC):
         # potential and concentration and global elements with a single degree
         # of freedom ('Real') for constraints.
 
-        # P = basix.ufl.element('Lagrange', self.mesh.basix_cell(), 3)
+        P = basix.ufl.element('Lagrange', self.mesh.basix_cell(), 3)
 
         # No Real elements in fenicsx yet, see
         # https://fenicsproject.discourse.group/t/integral-constrains-in-fenicsx/11429
         # suggested the use of https://github.com/jorgensd/dolfinx_mpc
         # R = basix.ufl.element('Real', self.mesh.basix_cell(), 0)
 
-        # elements = [P] * (1 + self.M) + [R] * self.K
+        elements = [P] * (1 + self.M) # + [R] * self.K
 
-        # H = basix.ufl.mixed_element(elements)
+        H = basix.ufl.mixed_element(elements)
 
         # mixed elements introduce artifacts in the solution, vector elements apparently work fine
         # ignore constraints for now
-        H = ufl.VectorElement("Lagrange", self.mesh.ufl_cell(), 3, dim=self.M+1)
+        # H = ufl.VectorElement("Lagrange", self.mesh.ufl_cell(), 3, dim=self.M+1)
 
         self.W = dolfinx.fem.functionspace(self.mesh, H)
 
