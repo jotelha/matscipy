@@ -38,6 +38,7 @@ import dolfinx.mesh
 from dolfinx.fem.petsc import NonlinearProblem
 from dolfinx.nls.petsc import NewtonSolver
 from dolfinx.io import gmshio # XDMFFile
+from petsc4py import PETSc
 
 from matscipy.electrochemistry.poisson_nernst_planck_solver_base import PoissonNernstPlanckSystemABC
 
@@ -128,7 +129,9 @@ class PoissonNernstPlanckSystemFEniCSx2d(PoissonNernstPlanckSystemABC):
         cell_list = dolfinx.geometry.compute_colliding_cells(self.mesh, cell_candidates, x)
 
         # compute solution at all points
-        w = np.array([self.w.eval(p, cell_list.links(i)[0]) for i, p in enumerate(x)]).T
+        w = np.array([
+                np.array([self.w.sub(j).eval(p, cell_list.links(i)[0]) for i, p in enumerate(x)]).flatten()
+            for j in range(self.M + 1)])
 
         return w.T
 
@@ -177,13 +180,14 @@ class PoissonNernstPlanckSystemFEniCSx2d(PoissonNernstPlanckSystemABC):
 
         solver = NewtonSolver(MPI.COMM_WORLD, problem)
         solver.convergence_criterion = "incremental"
-        solver.rtol = 1e-9
+        solver.rtol = self.rtol
         solver.report = True
 
         # suggestions from fenicsx tutorial
         # ksp = solver.krylov_solver
         # opts = PETSc.Options()
         # option_prefix = ksp.getOptionsPrefix()
+        # opts[f"{option_prefix}pc_type"] = "ksp"
         # opts[f"{option_prefix}ksp_type"] = "cg"
         # opts[f"{option_prefix}pc_type"] = "gamg"
         # opts[f"{option_prefix}pc_factor_mat_solver_type"] = "mumps"
@@ -334,11 +338,13 @@ class PoissonNernstPlanckSystemFEniCSx2d(PoissonNernstPlanckSystemABC):
         # default solver settings
         self.converged = False  # solver's convergence flag
 
-    def __init__(self, *args, mesh_file=None, scale_mesh=True, **kwargs):
+    def __init__(self, *args, mesh_file=None, scale_mesh=True, rtol=1.0e-6, **kwargs):
         """Same parameters as PoissonNernstPlanckSystem.init"""
         self.init(*args, **kwargs)
 
+        self.rtol = rtol
         self.K = 0  # number of Lagrange multipliers (constraints)
         self.constraints = 0  # holds constraint kernels
         self.read_mesh_from_file(mesh_file, scale=scale_mesh)
+
         self.discretize()
